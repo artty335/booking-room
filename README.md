@@ -1,36 +1,65 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ระบบจองห้องประชุม 205
 
-## Getting Started
+Next.js app สำหรับจองห้องประชุม 205 ห้องเดียว, login ด้วย LINE Login, กันเวลาจองซ้ำที่ระดับฐานข้อมูล, และแจ้งเตือนผ่าน LINE Messaging API
 
-First, run the development server:
+## Stack
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- Next.js (App Router) + Tailwind CSS
+- PostgreSQL + Prisma (Postgres `EXCLUDE` constraint กันจองซ้ำ)
+- next-auth v5 + LINE Login provider
+- `@line/bot-sdk` สำหรับ push message แจ้งเตือน
+- `react-big-calendar` สำหรับ UI ปฏิทิน
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Setup
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. ติดตั้ง dependencies
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+   ```bash
+   npm install
+   ```
 
-## Learn More
+2. เตรียม PostgreSQL แล้วตั้งค่า `.env` (คัดลอกจาก `.env.example`)
 
-To learn more about Next.js, take a look at the following resources:
+   ```bash
+   cp .env.example .env
+   ```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+3. สร้าง LINE Login channel ที่ [LINE Developers Console](https://developers.line.biz/console/)
+   - เปิดใช้งาน "Web app" ภายใต้ LINE Login
+   - ตั้ง Callback URL เป็น `<NEXTAUTH_URL>/api/auth/callback/line`
+   - นำ Channel ID / Channel secret มาใส่ใน `LINE_LOGIN_CLIENT_ID` / `LINE_LOGIN_CLIENT_SECRET`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+4. สร้าง LINE Messaging API channel แยกต่างหาก (คนละ channel กับ LINE Login) เพื่อใช้ push แจ้งเตือน แล้วนำ Channel access token มาใส่ใน `LINE_MESSAGING_CHANNEL_ACCESS_TOKEN`
 
-## Deploy on Vercel
+5. สร้าง `NEXTAUTH_SECRET` (`openssl rand -base64 32`) และ `CRON_SECRET` (ค่าสุ่มอะไรก็ได้)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+6. รัน migration
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+   ```bash
+   npx prisma migrate deploy
+   npx prisma generate
+   ```
+
+7. เริ่ม dev server
+
+   ```bash
+   npm run dev
+   ```
+
+   เปิด [http://localhost:3000](http://localhost:3000)
+
+## การกันจองซ้ำ (double-booking)
+
+การตรวจสอบเวลาซ้อนทับทำสองชั้น:
+
+1. **App-level** (`src/lib/booking-rules.ts`, ใช้ใน `src/app/api/bookings/`): เช็คก่อน insert เพื่อ return error ที่อ่านง่าย
+2. **DB-level** (ดู `prisma/migrations/*_init/migration.sql`): Postgres `EXCLUDE USING gist` constraint บนช่วงเวลาเป็น safety net จริงเวลามี concurrent request ชนกัน — ชั้นนี้เท่านั้นที่รับประกันได้ 100%
+
+## Cron แจ้งเตือน
+
+`vercel.json` ตั้ง cron ให้ยิง `/api/cron/reminders` ทุกวันเวลา 07:00 (Asia/Bangkok) เพื่อแจ้งเตือนผู้จองที่มีประชุมในวันนั้น (Vercel Hobby plan อนุญาต cron แบบรายวันเท่านั้น จึงเลือกดีไซน์แบบ "เตือนตอนเช้าของวันที่มีนัด" แทนแบบเตือนก่อนเวลาไม่กี่นาที)
+
+## Deploy
+
+Deploy บน [Vercel](https://vercel.com/new) ต่อกับ managed Postgres (เช่น Supabase, Neon) แล้วตั้งค่า environment variables ให้ตรงกับ `.env.example`
+# booking-room
