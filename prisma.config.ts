@@ -9,6 +9,9 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    // Migrations run DDL + advisory locks, which PgBouncer (transaction mode)
+    // does not support — so point the CLI at a direct, non-pooled connection.
+    // The app runtime still uses the pooled DATABASE_URL via src/lib/prisma.ts.
+    url: process.env["DIRECT_URL"] ?? process.env["DATABASE_URL"],
   },
 });

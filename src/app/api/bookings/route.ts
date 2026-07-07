@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { createBookingSchema } from "@/lib/schemas";
 import { isBookingOverlapError, validateBookingWindow } from "@/lib/booking-rules";
 import { notifyBookingCreated } from "@/lib/line";
+import { notifyStaffBookingCreated } from "@/lib/mail";
 
 const OVERLAP_MESSAGE = "ช่วงเวลานี้ถูกจองแล้ว กรุณาเลือกเวลาอื่น";
 
@@ -80,6 +81,7 @@ export async function POST(request: NextRequest) {
     });
 
     await notifyBookingCreated(booking);
+    await notifyStaffBookingCreated(booking);
 
     return NextResponse.json(booking, { status: 201 });
   } catch (err) {

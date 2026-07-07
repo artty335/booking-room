@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { createBookingSchema } from "@/lib/schemas";
 import { isBookingOverlapError, validateBookingWindow } from "@/lib/booking-rules";
 import { notifyBookingCancelled } from "@/lib/line";
+import { notifyStaffBookingCancelled } from "@/lib/mail";
 
 const OVERLAP_MESSAGE = "ช่วงเวลานี้ถูกจองแล้ว กรุณาเลือกเวลาอื่น";
 
@@ -98,6 +99,7 @@ export async function DELETE(
   });
 
   await notifyBookingCancelled(booking);
+  await notifyStaffBookingCancelled(booking);
 
   return NextResponse.json(booking);
 }
