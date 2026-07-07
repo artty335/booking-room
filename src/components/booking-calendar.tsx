@@ -45,25 +45,18 @@ const HOURS = Array.from(
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
-// "HH:mm" start options in 30-min steps. The latest valid start leaves room
-// for the shortest (30-min) booking before closing time.
-const START_OPTIONS: string[] = [];
+// "HH:mm" options in 30-min steps across business hours.
+const TIME_OPTIONS: string[] = [];
 for (let h = BUSINESS_HOUR_START; h <= BUSINESS_HOUR_END; h++) {
   for (const m of [0, 30]) {
-    if (h * 60 + m > BUSINESS_HOUR_END * 60 - 30) break;
-    START_OPTIONS.push(`${pad(h)}:${pad(m)}`);
+    if (h === BUSINESS_HOUR_END && m > 0) break;
+    TIME_OPTIONS.push(`${pad(h)}:${pad(m)}`);
   }
 }
-
-// Selectable meeting lengths, capped at MAX_DURATION_HOURS.
-const DURATIONS: { min: number; label: string }[] = [
-  { min: 30, label: "30 นาที" },
-  { min: 60, label: "1 ชม." },
-  { min: 90, label: "1 ชม. 30 น." },
-  { min: 120, label: "2 ชม." },
-  { min: 180, label: "3 ชม." },
-  { min: 240, label: "4 ชม." },
-].filter((d) => d.min <= MAX_DURATION_HOURS * 60);
+// A start must leave room for the shortest (30-min) booking; an end must come
+// after some start.
+const START_OPTIONS = TIME_OPTIONS.slice(0, -1);
+const END_OPTIONS = TIME_OPTIONS.slice(1);
 
 const toMin = (t: string) => {
   const [h, m] = t.split(":").map(Number);
@@ -74,15 +67,20 @@ const fromMin = (min: number) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`
 // Does [a, b) overlap any of the given [start, end) minute intervals?
 const overlaps = (a: number, b: number, intervals: [number, number][]) =>
   intervals.some(([bs, be]) => a < be && b > bs);
-// Can a booking of `dur` minutes start at `sMin` — within hours and not
-// colliding with an existing booking?
-const fitsDuration = (
-  sMin: number,
-  dur: number,
-  intervals: [number, number][],
-) => sMin + dur <= BUSINESS_HOUR_END * 60 && !overlaps(sMin, sMin + dur, intervals);
-const hasAnyDuration = (sMin: number, intervals: [number, number][]) =>
-  DURATIONS.some((d) => fitsDuration(sMin, d.min, intervals));
+// The next booking that begins at/after `sMin` (Infinity if none).
+const nextBusyStart = (sMin: number, intervals: [number, number][]) =>
+  intervals.reduce((m, [bs]) => (bs > sMin ? Math.min(m, bs) : m), Infinity);
+// Latest end time bookable from `sMin`: bounded by closing time, the max
+// duration, and the next existing booking.
+const maxEndMin = (sMin: number, intervals: [number, number][]) =>
+  Math.min(
+    BUSINESS_HOUR_END * 60,
+    sMin + MAX_DURATION_HOURS * 60,
+    nextBusyStart(sMin, intervals),
+  );
+// Is `sMin` a usable start — free right now and with room for a 30-min meeting?
+const startFree = (sMin: number, intervals: [number, number][]) =>
+  !overlaps(sMin, sMin + 1, intervals) && maxEndMin(sMin, intervals) - sMin >= 30;
 
 const thaiDate = (d: Date) =>
   new Intl.DateTimeFormat("th-TH", {
@@ -102,7 +100,7 @@ type CreateState = {
   open: boolean;
   date: string;
   start: string;
-  durationMinutes: number;
+  end: string;
   title: string;
   submitting: boolean;
   error: string | null;
@@ -112,7 +110,7 @@ const emptyCreate: CreateState = {
   open: false,
   date: "",
   start: "",
-  durationMinutes: 60,
+  end: "",
   title: "",
   submitting: false,
   error: null,
@@ -226,80 +224,75 @@ export function BookingCalendar({
     [earliestMinFor, create.date],
   );
 
-  // Pick a valid (start, duration) for a date, keeping the caller's
-  // preferences when they still fit around existing bookings.
+  // Pick a valid (start, end) for a date, keeping the caller's preferences
+  // when they still fit around existing bookings.
   const pickSlot = useCallback(
-    (dateStr: string, preferStart: string, preferDur: number) => {
+    (dateStr: string, preferStart: string, preferEnd: string) => {
       const intervals = busyIntervals(dateStr);
       const earliest = earliestMinFor(dateStr);
-      const startOk = (t: string) => {
-        const s = toMin(t);
-        return (
-          s >= earliest && !overlaps(s, s + 1, intervals) && hasAnyDuration(s, intervals)
-        );
-      };
+      const startOk = (t: string) => toMin(t) >= earliest && startFree(toMin(t), intervals);
       const start =
         preferStart && startOk(preferStart)
           ? preferStart
           : (START_OPTIONS.find(startOk) ?? preferStart);
       const sMin = toMin(start);
-      const durationMinutes = fitsDuration(sMin, preferDur, intervals)
-        ? preferDur
-        : (DURATIONS.find((d) => fitsDuration(sMin, d.min, intervals))?.min ??
-          preferDur);
-      return { start, durationMinutes };
+      const maxEnd = maxEndMin(sMin, intervals);
+      const pe = preferEnd ? toMin(preferEnd) : 0;
+      const eMin = pe > sMin && pe <= maxEnd ? pe : Math.min(sMin + 60, maxEnd);
+      return { start, end: fromMin(eMin) };
     },
     [busyIntervals, earliestMinFor],
   );
 
   const openCreate = (startHour: number) => {
     const date = dateInputValue(day);
-    const slot = pickSlot(date, `${pad(startHour)}:00`, 60);
+    const slot = pickSlot(date, `${pad(startHour)}:00`, `${pad(startHour + 1)}:00`);
     setCreate({ ...emptyCreate, open: true, date, ...slot });
   };
 
   const changeDate = (date: string) =>
-    setCreate((c) => ({ ...c, date, ...pickSlot(date, c.start, c.durationMinutes) }));
+    setCreate((c) => ({ ...c, date, ...pickSlot(date, c.start, c.end) }));
 
   const changeStart = (start: string) =>
     setCreate((c) => {
       const sMin = toMin(start);
-      const durationMinutes = fitsDuration(sMin, c.durationMinutes, busyForDate)
-        ? c.durationMinutes
-        : (DURATIONS.find((d) => fitsDuration(sMin, d.min, busyForDate))?.min ??
-          c.durationMinutes);
-      return { ...c, start, durationMinutes };
+      const maxEnd = maxEndMin(sMin, busyForDate);
+      const ce = toMin(c.end);
+      const eMin = ce > sMin && ce <= maxEnd ? ce : Math.min(sMin + 60, maxEnd);
+      return { ...c, start, end: fromMin(eMin) };
     });
 
   const startDisabled = (t: string) => {
     const sMin = toMin(t);
-    return (
-      sMin < earliestMin ||
-      overlaps(sMin, sMin + 1, busyForDate) ||
-      !hasAnyDuration(sMin, busyForDate)
-    );
+    return sMin < earliestMin || !startFree(sMin, busyForDate);
   };
-  const durationDisabled = (dur: number) =>
-    !create.start || !fitsDuration(toMin(create.start), dur, busyForDate);
+  const endDisabled = (t: string) => {
+    if (!create.start) return true;
+    const sMin = toMin(create.start);
+    const eMin = toMin(t);
+    return eMin <= sMin || eMin > maxEndMin(sMin, busyForDate);
+  };
 
   const dayFull = create.open && START_OPTIONS.every(startDisabled);
   const selectionInvalid =
-    !create.start || startDisabled(create.start) || durationDisabled(create.durationMinutes);
-  const endMin = create.start ? toMin(create.start) + create.durationMinutes : 0;
+    !create.start || !create.end || startDisabled(create.start) || endDisabled(create.end);
 
   const submitCreate = async () => {
-    const { date, start, durationMinutes, title } = create;
+    const { date, start, end, title } = create;
     if (!title.trim()) {
       setCreate((c) => ({ ...c, error: "กรุณาระบุหัวข้อการประชุม" }));
       return;
     }
     const [y, mo, d] = date.split("-").map(Number);
     const [sh, sm] = start.split(":").map(Number);
-    const startWall = new Date(y, mo - 1, d, sh, sm);
-    const endWall = new Date(startWall.getTime() + durationMinutes * 60_000);
-    const startUtc = fromBangkokWall(startWall);
-    const endUtc = fromBangkokWall(endWall);
+    const [eh, em] = end.split(":").map(Number);
+    const startUtc = fromBangkokWall(new Date(y, mo - 1, d, sh, sm));
+    const endUtc = fromBangkokWall(new Date(y, mo - 1, d, eh, em));
 
+    if (endUtc <= startUtc) {
+      setCreate((c) => ({ ...c, error: "เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม" }));
+      return;
+    }
     if (startUtc.getTime() < Date.now() + MIN_LEAD_TIME_MINUTES * 60_000) {
       setCreate((c) => ({
         ...c,
@@ -531,7 +524,7 @@ export function BookingCalendar({
             {dayFull ? (
               <Alert severity="info">ช่วงเวลาทำการของวันนี้ถูกจองเต็มแล้ว ลองเลือกวันอื่น</Alert>
             ) : (
-              <>
+              <Stack direction="row" spacing={2}>
                 <TextField
                   select
                   label="เวลาเริ่ม"
@@ -545,37 +538,25 @@ export function BookingCalendar({
                     </MenuItem>
                   ))}
                 </TextField>
-                <Box>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
-                    ระยะเวลา
-                  </Typography>
-                  <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-                    {DURATIONS.map((dr) => {
-                      const disabled = durationDisabled(dr.min);
-                      const selected = create.durationMinutes === dr.min;
-                      return (
-                        <Button
-                          key={dr.min}
-                          size="small"
-                          disableElevation
-                          variant={selected ? "contained" : "outlined"}
-                          color={selected ? "primary" : "inherit"}
-                          disabled={disabled}
-                          onClick={() => setCreate((c) => ({ ...c, durationMinutes: dr.min }))}
-                          sx={{ borderRadius: 999, minWidth: 0, px: 1.75 }}
-                        >
-                          {dr.label}
-                        </Button>
-                      );
-                    })}
-                  </Box>
-                </Box>
-              </>
+                <TextField
+                  select
+                  label="เวลาสิ้นสุด"
+                  value={create.end}
+                  onChange={(e) => setCreate((c) => ({ ...c, end: e.target.value }))}
+                  fullWidth
+                >
+                  {END_OPTIONS.map((t) => (
+                    <MenuItem key={t} value={t} disabled={endDisabled(t)}>
+                      {t}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Stack>
             )}
             {create.error && <Alert severity="error">{create.error}</Alert>}
-            {!dayFull && create.start && (
+            {!dayFull && (
               <Typography variant="caption" color="text.secondary">
-                {create.start} – {fromMin(endMin)} น. · จองได้ครั้งละไม่เกิน {MAX_DURATION_HOURS} ชั่วโมง
+                จองได้ครั้งละไม่เกิน {MAX_DURATION_HOURS} ชั่วโมง
               </Typography>
             )}
           </Stack>
